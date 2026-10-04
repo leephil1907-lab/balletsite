@@ -12,9 +12,15 @@ export type AgentResponse = {
 };
 
 export async function callAgent(messages: ChatMessage[], systemPrompt?: string) {
+  const effectiveMessages: ChatMessage[] = systemPrompt
+    ? [{ role: "system", content: systemPrompt }, ...messages.filter((message) => message.role !== "system")]
+    : messages;
+
   const payload = {
-    messages,
-    ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
+    model: serverConfig.agentModel,
+    messages: effectiveMessages,
+    temperature: 0.7,
+    stream: false,
   };
 
   const response = await fetch(serverConfig.agentUrl(), {
@@ -26,10 +32,21 @@ export async function callAgent(messages: ChatMessage[], systemPrompt?: string) 
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data?.error || `Agent backend returned ${response.status}`);
+    throw new Error(data?.error?.message || data?.error || `Agent backend returned ${response.status}`);
   }
 
-  return data as AgentResponse;
+  const content =
+    typeof data?.content === "string"
+      ? data.content
+      : typeof data?.choices?.[0]?.message?.content === "string"
+        ? data.choices[0].message.content
+        : "";
+
+  return {
+    content,
+    model: data?.model,
+    usage: data?.usage,
+  } satisfies AgentResponse;
 }
 
 export async function synthesizeSpeech(input: Record<string, unknown>) {
