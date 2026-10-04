@@ -1,61 +1,39 @@
 import { NextRequest } from "next/server";
+import { synthesizeSpeech } from "@/lib/server/backend";
 
 export const runtime = "nodejs";
 
-const backendUrl = process.env.REACHMARK_TTS_URL;
-
 export async function POST(request: NextRequest) {
-  if (!backendUrl) {
-    return new Response(
-      JSON.stringify({
-        error: "Reachmark TTS backend is not configured. Set REACHMARK_TTS_URL.",
-      }),
-      {
-        status: 503,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-  }
-
   try {
     const body = await request.json();
+    if (typeof body?.text !== "string" || !body.text.trim()) {
+      return new Response(JSON.stringify({ error: "Text is required." }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
-    const upstream = await fetch(backendUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(process.env.REACHMARK_BACKEND_TOKEN
-          ? { Authorization: `Bearer ${process.env.REACHMARK_BACKEND_TOKEN}` }
-          : {}),
-      },
-      body: JSON.stringify(body),
-      cache: "no-store",
+    const upstream = await synthesizeSpeech({
+      ...body,
+      text: body.text.trim().slice(0, 10000),
+      model_id: body.model_id || "xtts-v2",
     });
 
-    const contentType = upstream.headers.get("content-type") || "audio/wav";
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers: {
-        "Content-Type": contentType,
-        ...(upstream.headers.get("content-length")
-          ? { "Content-Length": upstream.headers.get("content-length")! }
-          : {}),
-        ...(upstream.headers.get("content-disposition")
-          ? {
-              "Content-Disposition":
-                upstream.headers.get("content-disposition")!,
-            }
-          : {}),
-      },
-    });
+    const headers = new Headers();
+    headers.set("Content-Type", upstream.headers.get("content-type") || "audio/wav");
+    const length = upstream.headers.get("content-length");
+    if (length) headers.set("Content-Length", length);
+    const disposition = upstream.headers.get("content-disposition");
+    if (disposition) headers.set("Content-Disposition", disposition);
+    headers.set("Cache-Control", "no-store");
+
+    return new Response(upstream.body, { status: 200, headers });
   } catch (error) {
     console.error("Reachmark TTS proxy error", error);
-    return new Response(
-      JSON.stringify({ error: "Unable to reach the Reachmark TTS backend." }),
-      {
-        status: 502,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
+    const message = error instanceof Error ? error.message : "TTS backend unavailable.";
+    return new Response(JSON.stringify({ error: message }), {
+      status: message.includes("not configured") ? 503 : 502,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }
